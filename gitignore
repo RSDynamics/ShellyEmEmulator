@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# ESPHome build artifacts (relevant if you ever add a local test .yaml in this repo)
+.esphome/
+*.bin
+*.elf
+*.map
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+*.code-workspace
+
+# Secrets -- never commit these if you ever add a test config here
+secrets.yaml
