@@ -10,6 +10,8 @@
 #include "esphome/core/log.h"
 #include "esphome/core/helpers.h"
 
+#include "esphome/components/network/util.h"
+
 #include "lwip/netdb.h"
 #include "arpa/inet.h"
 
@@ -25,10 +27,22 @@ void ShellyEmEmulator::setup() {
     this->device_id_ = this->generate_device_id_from_mac_();
   ESP_LOGCONFIG(TAG, "Shelly EM emulator device id: %s", this->device_id_.c_str());
 
+  // Deliberately NOT creating the UDP socket here. setup() runs very early in the boot
+  // process, before WiFi necessarily has a connection -- see ensure_socket_(), called
+  // from check_power_update(), which creates it lazily once network::is_connected().
+}
+
+bool ShellyEmEmulator::ensure_socket_() {
+  if (this->sock_ >= 0)
+    return true;
+
+  if (!network::is_connected())
+    return false;
+
   this->sock_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
   if (this->sock_ < 0) {
     ESP_LOGE(TAG, "Failed to create UDP socket");
-    return;
+    return false;
   }
   memset(&this->dest_addr_, 0, sizeof(this->dest_addr_));
   this->dest_addr_.sin_family = AF_INET;
@@ -39,6 +53,7 @@ void ShellyEmEmulator::setup() {
   // even if your network ever has multiple switches/VLANs between the devices involved.
   uint8_t ttl = 8;
   setsockopt(this->sock_, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
+  return true;
 }
 
 void ShellyEmEmulator::check_power_update() {
@@ -55,11 +70,15 @@ void ShellyEmEmulator::check_power_update() {
   bool heartbeat_due = (now - this->last_sent_ms_) >= this->heartbeat_interval_;
   bool changed = std::fabs(power - this->last_sent_power_) >= this->power_delta_;
 
-  if (this->last_sent_ms_ == 0 || heartbeat_due || changed) {
-    this->send_coiot_status_(power);
-    this->last_sent_power_ = power;
-    this->last_sent_ms_ = now;
-  }
+  if (this->last_sent_ms_ != 0 && !heartbeat_due && !changed)
+    return;
+
+  if (!this->ensure_socket_())
+    return;  // Not connected yet -- try again next time this is called.
+
+  this->send_coiot_status_(power);
+  this->last_sent_power_ = power;
+  this->last_sent_ms_ = now;
 }
 
 // Builds "SHEM#<last 6 hex chars of MAC, uppercase>#2", mirroring a real Shelly EM's

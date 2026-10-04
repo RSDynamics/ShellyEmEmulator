@@ -104,6 +104,13 @@ class ShellyEmEmulator : public PollingComponent {
   void check_power_update();
 
  protected:
+  // Lazily creates the UDP socket, only once the network is actually connected.
+  // Returns true if the socket is ready to use. Creating a UDP socket before the
+  // network stack is fully up has been observed to be unsafe on some ESP-IDF/ESPHome
+  // version combinations, so this defers it rather than doing it unconditionally in
+  // setup() (which runs very early in the boot process, before WiFi necessarily has a
+  // connection).
+  bool ensure_socket_();
   std::string generate_device_id_from_mac_();
   float sum_tariffs_wh_(sensor::Sensor *t1, sensor::Sensor *t2);
   void send_coiot_status_(float power);
