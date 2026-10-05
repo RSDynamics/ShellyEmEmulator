@@ -23,13 +23,10 @@ static const char *const COIOT_MCAST_IP = "224.0.1.187";
 static const uint16_t COIOT_PORT = 5683;
 
 void ShellyEmEmulator::setup() {
-  if (this->device_id_.empty())
-    this->device_id_ = this->generate_device_id_from_mac_();
-  ESP_LOGCONFIG(TAG, "Shelly EM emulator device id: %s", this->device_id_.c_str());
-
-  // Deliberately NOT creating the UDP socket here. setup() runs very early in the boot
-  // process, before WiFi necessarily has a connection -- see ensure_socket_(), called
-  // from check_power_update(), which creates it lazily once network::is_connected().
+  // Deliberately doing nothing here except what the base class needs. setup() runs
+  // very early in the boot process, before WiFi/network is necessarily initialized --
+  // see ensure_socket_(), called from check_power_update(), which lazily creates the
+  // socket AND generates the MAC-derived device id, only once network::is_connected().
 }
 
 bool ShellyEmEmulator::ensure_socket_() {
@@ -38,6 +35,10 @@ bool ShellyEmEmulator::ensure_socket_() {
 
   if (!network::is_connected())
     return false;
+
+  if (this->device_id_.empty())
+    this->device_id_ = this->generate_device_id_from_mac_();
+  ESP_LOGCONFIG(TAG, "Shelly EM emulator device id: %s", this->device_id_.c_str());
 
   this->sock_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
   if (this->sock_ < 0) {
@@ -56,29 +57,58 @@ bool ShellyEmEmulator::ensure_socket_() {
   return true;
 }
 
-void ShellyEmEmulator::check_power_update() {
-  if (this->power_sensor_ == nullptr || !this->power_sensor_->has_state())
-    return;
-
+float ShellyEmEmulator::compute_power_() {
   float power = this->power_sensor_->state;
   if (this->power_returned_sensor_ != nullptr && this->power_returned_sensor_->has_state()
       && this->power_returned_sensor_->state > 0.0f) {
     power = -this->power_returned_sensor_->state;
   }
+  return power;
+}
 
-  uint32_t now = millis();
-  bool heartbeat_due = (now - this->last_sent_ms_) >= this->heartbeat_interval_;
+void ShellyEmEmulator::check_power_update() {
+  if (this->power_sensor_ == nullptr || !this->power_sensor_->has_state())
+    return;
+
+  float power = this->compute_power_();
   bool changed = std::fabs(power - this->last_sent_power_) >= this->power_delta_;
 
-  if (this->last_sent_ms_ != 0 && !heartbeat_due && !changed)
-    return;
+  if (this->has_sent_once_ && !changed)
+    return;  // No meaningful change -- the heartbeat timer (not this poll) handles the
+              // "nothing changed in a while" case, precisely, on its own schedule.
 
   if (!this->ensure_socket_())
     return;  // Not connected yet -- try again next time this is called.
 
+  this->send_now_(power);
+}
+
+void ShellyEmEmulator::send_now_(float power) {
   this->send_coiot_status_(power);
   this->last_sent_power_ = power;
-  this->last_sent_ms_ = now;
+  this->has_sent_once_ = true;
+  this->schedule_heartbeat_();
+}
+
+void ShellyEmEmulator::schedule_heartbeat_() {
+  // set_timeout() with a fixed name replaces any previously pending timeout under that
+  // same name, so calling this again (from send_now_(), every time anything is sent)
+  // correctly pushes the heartbeat deadline out to heartbeat_interval from NOW, rather
+  // than from whenever a periodic poll last happened to check.
+  this->set_timeout("shelly_em_heartbeat", this->heartbeat_interval_, [this]() {
+    if (this->power_sensor_ == nullptr || !this->power_sensor_->has_state())
+      return;  // Nothing to report yet; no heartbeat without at least one real value.
+
+    if (!this->ensure_socket_()) {
+      // Network not available right now (e.g. a WiFi drop) -- retry on the same
+      // schedule rather than silently giving up on the heartbeat forever.
+      this->schedule_heartbeat_();
+      return;
+    }
+
+    // Forced send: this is the heartbeat firing, so send regardless of power_delta.
+    this->send_now_(this->compute_power_());
+  });
 }
 
 // Builds "SHEM#<last 6 hex chars of MAC, uppercase>#2", mirroring a real Shelly EM's

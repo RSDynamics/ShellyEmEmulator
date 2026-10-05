@@ -54,9 +54,12 @@ namespace shelly_em_emulator {
 
 class ShellyEmEmulator : public PollingComponent {
  public:
-  // update_interval (set via the standard ESPHome polling-component "update_interval"
-  // option) controls how often we *check* for a change; it is independent of the
-  // heartbeat_interval below, which controls the minimum guaranteed send rate.
+  // update_interval (the standard ESPHome polling-component option) ONLY controls how
+  // often this falls back to polling your power sensor for a change -- useful if you
+  // don't wire up the on_value hook described below. It has nothing to do with
+  // heartbeat timing: the heartbeat is scheduled with its own precise, self-rescheduling
+  // timer (see schedule_heartbeat_()), not by polling, so it fires exactly
+  // heartbeat_interval after the last actual send, regardless of update_interval.
   ShellyEmEmulator() = default;
 
   // Leave unset (default) to auto-generate a unique id from this device's own MAC
@@ -87,12 +90,12 @@ class ShellyEmEmulator : public PollingComponent {
   void setup() override;
   void update() override { this->check_power_update(); }
 
-  // Checks whether power has changed by at least power_delta, or the heartbeat_interval
-  // has elapsed, and if so builds and sends a CoIoT status update immediately. This is
-  // called automatically every update_interval as a safety-net poll, so wiring this up
-  // yourself is optional -- but for instant, event-driven updates (matching how the
-  // dsmr sensors themselves update, rather than waiting for the next poll tick), call
-  // this from an on_value trigger on your power sensor, e.g.:
+  // Checks whether power has changed by at least power_delta (or this is the very
+  // first value ever seen), and if so sends immediately. This is called automatically
+  // every update_interval as a polling fallback, so wiring this up yourself is
+  // optional -- but for instant, event-driven updates (matching how the dsmr sensors
+  // themselves update, rather than waiting for the next poll tick), call this from an
+  // on_value trigger on your power sensor, e.g.:
   //
   //   sensor:
   //     - platform: template
@@ -101,9 +104,27 @@ class ShellyEmEmulator : public PollingComponent {
   //       on_value:
   //         then:
   //           - lambda: id(shelly_emulator_id).check_power_update();
+  //
+  // Note this only handles change-triggered sends; the heartbeat (guaranteeing a send
+  // at least every heartbeat_interval even with no change) runs independently, see
+  // schedule_heartbeat_().
   void check_power_update();
 
  protected:
+  // Computes the current signed power (positive = import, negative = export) from the
+  // configured sensors.
+  float compute_power_();
+  // Sends now (building+sending the packet via send_coiot_status_), records it as the
+  // last-sent state, and (re)schedules the heartbeat timer for heartbeat_interval from
+  // now -- this is the ONLY place that (re)schedules the heartbeat, so every actual send,
+  // whatever triggered it, correctly resets the "time since last send" the heartbeat is
+  // measured against. This is what makes the heartbeat precise regardless of
+  // update_interval/poll timing.
+  void send_now_(float power);
+  // Schedules (or re-schedules, cancelling any pending one) a one-shot timer for
+  // heartbeat_interval from now, which performs a forced send and then calls this again.
+  void schedule_heartbeat_();
+
   // Lazily creates the UDP socket, only once the network is actually connected.
   // Returns true if the socket is ready to use. Creating a UDP socket before the
   // network stack is fully up has been observed to be unsafe on some ESP-IDF/ESPHome
@@ -134,7 +155,7 @@ class ShellyEmEmulator : public PollingComponent {
   sensor::Sensor *voltage_sensor_{nullptr};
 
   float last_sent_power_{0.0f};
-  uint32_t last_sent_ms_{0};
+  bool has_sent_once_{false};
   uint16_t msg_id_{1};
   uint16_t serial_{1};
 };

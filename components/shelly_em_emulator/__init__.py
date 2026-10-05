@@ -64,7 +64,11 @@ CONFIG_SCHEMA = cv.Schema(
 
 async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
-    await cg.register_component(var, config)
+    # register_polling_component (not the plain register_component) is required for a
+    # PollingComponent subclass: it's what actually applies the configured
+    # update_interval via set_update_interval(). Without it, update_interval in your
+    # YAML is silently ignored.
+    await cg.register_polling_component(var, config)
 
     power_sensor = await cg.get_variable(config[CONF_POWER])
     cg.add(var.set_power_sensor(power_sensor))

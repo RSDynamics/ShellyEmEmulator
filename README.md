@@ -86,17 +86,15 @@ shelly_em_emulator:
   voltage: voltage_l1_sensor
   heartbeat_interval: 15s   # optional, defaults to 15s -- matches a real Shelly EM's observed period
   power_delta: 1.0          # optional, Watts; defaults to 1.0
-  update_interval: 15s      # optional (standard ESPHome polling option); this is now only the
-                             # heartbeat safety-net poll, see below -- can be as wide as heartbeat_interval
+  update_interval: 1s       # optional (standard ESPHome polling option) -- see below for what this does
   # device_id: "SHEM#AABBCC#2"  # optional, see "Device identity" below -- leave unset unless you have a specific reason to set it
 ```
 
 ### Recommended: instant, event-driven updates
 
-By default, `check_power_update()` (which decides whether to send, based on
-`power_delta`/`heartbeat_interval`) only runs every `update_interval` as a poll. For
-truly instant updates -- sent the moment your power sensor changes, not on the next poll
-tick -- call it from an `on_value` trigger on your (combined/net) power sensor instead:
+For truly instant updates -- sent the moment your power sensor changes, rather than on
+the next poll tick -- call `check_power_update()` from an `on_value` trigger on your
+(combined/net) power sensor:
 
 ```yaml
 sensor:
@@ -111,8 +109,39 @@ sensor:
         - lambda: id(shelly_emulator).check_power_update();
 ```
 
-With this in place, `update_interval` above only still matters as the heartbeat
-safety-net poll, so it's fine to set it as wide as `heartbeat_interval` itself.
+### What `update_interval` actually controls (and what it doesn't)
+
+This component's heartbeat does **not** rely on polling: every actual send (whether
+change-triggered or itself a heartbeat) schedules a precise, self-rescheduling one-shot
+timer for exactly `heartbeat_interval` later, via ESPHome's `set_timeout()`. So the
+heartbeat fires exactly `heartbeat_interval` after the *last real send*, regardless of
+`update_interval` -- there's no polling-granularity slop to account for, and no need to
+tune `update_interval` relative to `heartbeat_interval` at all.
+
+`update_interval` only controls the **polling fallback** for *change detection*: if you
+don't wire up the `on_value` hook above, this is the only way `check_power_update()` is
+ever called, so `update_interval` becomes the resolution at which value changes are
+noticed (e.g. every 1s). If you do use the `on_value` hook, `update_interval` still runs
+in the background as a backstop (useful mainly for retrying the very first send if the
+network wasn't up yet when the first value arrived), so there's no need to disable or
+widen it -- the small default (`1s`) is fine either way.
+
+If you'd rather have no polling path at all -- relying 100% on the `on_value` hook for
+change detection, with zero chance of the poll ever doing anything, by construction
+rather than by the delta check happening to evaluate to zero -- set:
+
+```yaml
+shelly_em_emulator:
+  ...
+  update_interval: never
+```
+
+This is a standard ESPHome polling-component value that disables `update()` entirely.
+The heartbeat is unaffected either way, since it's scheduled independently (see above).
+The only trade-off: the very first send, if attempted before the network is up, will
+then only be retried on the next `on_value` trigger (i.e. the next telegram) rather than
+on the next 1s poll tick -- in practice a negligible difference, since dsmr sensors
+republish on every telegram regardless of whether the value changed.
 
 ## Configuration options
 
