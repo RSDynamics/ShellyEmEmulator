@@ -65,9 +65,11 @@ bool ShellyEmEmulator::ensure_socket_() {
   this->dest_addr_.sin_port = htons(COIOT_PORT);
   this->dest_addr_.sin_addr.s_addr = inet_addr(COIOT_MCAST_IP);
 
-  // TTL > 1 isn't needed on a single L2 segment, but a modest value keeps this working
-  // even if your network ever has multiple switches/VLANs between the devices involved.
-  uint8_t ttl = 8;
+  // Matches the TTL observed on a real Shelly EM's own multicast packets (128). On a
+  // single L2 segment this makes no functional difference (TTL only matters when a
+  // router forwards the packet), but it removes one more variable when comparing
+  // against real devices byte-for-byte.
+  uint8_t ttl = 128;
   setsockopt(this->sock_, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
   return true;
 }
