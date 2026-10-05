@@ -45,6 +45,21 @@ bool ShellyEmEmulator::ensure_socket_() {
     ESP_LOGE(TAG, "Failed to create UDP socket");
     return false;
   }
+
+  // Bind to the CoIoT port as the LOCAL port too, so outgoing packets have source port
+  // 5683, matching a real Shelly EM. Without this, the OS picks a random ephemeral
+  // source port, and at least some consumers (observed with a Lektrico charger) then
+  // don't recognize the broadcast as coming from a valid Shelly EM at all.
+  struct sockaddr_in bind_addr {};
+  bind_addr.sin_family = AF_INET;
+  bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+  bind_addr.sin_port = htons(COIOT_PORT);
+  if (bind(this->sock_, (struct sockaddr *) &bind_addr, sizeof(bind_addr)) < 0) {
+    ESP_LOGW(TAG, "Failed to bind UDP socket to port %d -- outgoing source port will be "
+                  "random, which some consumers may not recognize as a Shelly EM",
+             COIOT_PORT);
+  }
+
   memset(&this->dest_addr_, 0, sizeof(this->dest_addr_));
   this->dest_addr_.sin_family = AF_INET;
   this->dest_addr_.sin_port = htons(COIOT_PORT);
